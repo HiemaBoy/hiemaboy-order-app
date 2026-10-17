@@ -372,6 +372,17 @@
     @keyframes fadeIn { from { opacity: 0 } to { opacity: 1 } }
     @keyframes zoomIn { from { transform: scale(.92) } to { transform: scale(1) } }
 
+    /* "Press back again to exit" toast */
+    .toast {
+      position: fixed; left: 50%; bottom: 90px;
+      transform: translateX(-50%);
+      background: rgba(17,17,17,0.92); color: #fff;
+      font-size: 13px; padding: 10px 16px; border-radius: 20px;
+      z-index: 60; opacity: 0; pointer-events: none;
+      transition: opacity .2s;
+    }
+    .toast.show { opacity: 1; }
+
     .empty-state { text-align: center; padding: 40px 20px; color: #999; font-size: 13px; grid-column: 1 / -1; }
     .loading-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--brand); animation: pulse 1s infinite; }
     @keyframes pulse { 0%,100% { opacity: 0.3 } 50% { opacity: 1 } }
@@ -516,6 +527,8 @@
     <div class="lightbox-caption" id="lightboxCaption"></div>
   </div>
 
+  <div class="toast" id="toast"></div>
+
 <script>
   // ==========================================================
   // API_BASE_URL: Hiema Boy's own Apps Script Web app /exec URL.
@@ -589,7 +602,68 @@
       applyMode();
       loadProducts();
     }
-    document.addEventListener('keydown', e => { if (e.key === 'Escape') closeLightbox(); });
+    document.addEventListener('keydown', e => { if (e.key === 'Escape') uiBack(); });
+    setupBackButton();
+  }
+
+  /* ======================= PHONE BACK BUTTON ======================= */
+  // Every popup (photo, list, requests) adds a history entry when it opens,
+  // so the phone's back button closes the popup instead of leaving the app.
+  // On the main screen, back shows "Press back again to exit".
+  let layerDepth = 0;     // popups currently open via a history entry
+  let lastBackAt = 0;
+
+  function setupBackButton() {
+    history.replaceState({ hb: 'base' }, '');
+    // Chrome ignores history entries added before the user touches the page,
+    // so the exit guard is armed on the first tap.
+    document.addEventListener('pointerdown', () => history.pushState({ hb: 'guard' }, ''), { once: true });
+
+    window.addEventListener('popstate', () => {
+      if (layerDepth > 0) {
+        layerDepth--;
+        closeTopLayer();
+        return;
+      }
+      if (Date.now() - lastBackAt < 2000) {
+        history.back();   // second press: really leave
+        return;
+      }
+      lastBackAt = Date.now();
+      showToast('Press back again to exit');
+      history.pushState({ hb: 'guard' }, '');
+    });
+  }
+
+  function pushLayer() {
+    layerDepth++;
+    history.pushState({ hb: 'layer' }, '');
+  }
+
+  /** Used by every on-screen close button (×) and the Escape key. */
+  function uiBack() {
+    if (layerDepth > 0) history.back();  // popstate closes the top popup
+    else closeTopLayer();
+  }
+
+  function closeTopLayer() {
+    if (document.getElementById('lightbox').classList.contains('open')) hideLightbox();
+    else if (document.getElementById('requestsOverlay').classList.contains('open')) hideRequests();
+    else if (document.getElementById('overlay').classList.contains('open')) hideCart();
+  }
+
+  function syncScroll() {
+    const anyOpen = document.querySelector('.overlay.open, .lightbox.open');
+    document.body.classList.toggle('no-scroll', !!anyOpen);
+  }
+
+  let toastTimer = null;
+  function showToast(text) {
+    const t = document.getElementById('toast');
+    t.textContent = text;
+    t.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => t.classList.remove('show'), 2000);
   }
 
   function isValidEmail(email) { return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email); }
@@ -721,7 +795,8 @@
     img.alt = el.dataset.name || '';
     document.getElementById('lightboxCaption').textContent = el.dataset.name || '';
     box.classList.add('open');
-    document.body.classList.add('no-scroll');
+    syncScroll();
+    pushLayer();
 
     const large = el.dataset.large;
     if (large && large !== el.src) {
@@ -730,10 +805,11 @@
       pre.src = large;
     }
   }
-  function closeLightbox() {
+  function hideLightbox() {
     document.getElementById('lightbox').classList.remove('open');
-    if (!document.querySelector('.overlay.open')) document.body.classList.remove('no-scroll');
+    syncScroll();
   }
+  function closeLightbox() { uiBack(); }
 
   /* ======================= CART ======================= */
 
@@ -774,7 +850,8 @@
     document.getElementById('cartBar').style.display = count ? 'flex' : 'none';
   }
 
-  function openCart() {
+  /** skipHistory = true when swapping straight in from another popup (no new back step). */
+  function openCart(skipHistory) {
     renderCartItems();
     setDocType(DOC_TYPE);
     document.getElementById('adminActions').style.display = 'none';
@@ -782,12 +859,14 @@
     document.getElementById('submitBtn').style.display = 'block';
     showMsg('', '');
     document.getElementById('overlay').classList.add('open');
-    document.body.classList.add('no-scroll');
+    syncScroll();
+    if (skipHistory !== true) pushLayer();
   }
-  function closeCart() {
+  function hideCart() {
     document.getElementById('overlay').classList.remove('open');
-    document.body.classList.remove('no-scroll');
+    syncScroll();
   }
+  function closeCart() { uiBack(); }
 
   function renderCartItems() {
     const banner = document.getElementById('requestBanner');
@@ -1042,13 +1121,15 @@
   function openRequests() {
     renderRequests();
     document.getElementById('requestsOverlay').classList.add('open');
-    document.body.classList.add('no-scroll');
+    syncScroll();
+    pushLayer();
     loadRequests();
   }
-  function closeRequests() {
+  function hideRequests() {
     document.getElementById('requestsOverlay').classList.remove('open');
-    document.body.classList.remove('no-scroll');
+    syncScroll();
   }
+  function closeRequests() { uiBack(); }
 
   function renderRequests() {
     const list = document.getElementById('requestsList');
@@ -1095,9 +1176,10 @@
     document.getElementById('adminComments').value = '';
     document.getElementById('updateBasePrices').checked = false;
 
-    closeRequests();
+    // Swap the requests list for the cart in place, so one back press returns to the main screen
+    hideRequests();
     updateCartBar();
-    openCart();
+    openCart(true);
     if (skipped.length) showMsg('Not in the stock list any more, so left out: ' + skipped.join(', '), 'error');
   }
 
